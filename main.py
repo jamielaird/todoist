@@ -1,8 +1,9 @@
-from todoist.api import TodoistAPI
-import config
+from todoist_api_python.api import TodoistAPI
 
-api = TodoistAPI(config.access_token)
+api = TodoistAPI("op://Private/Todoist/token")
 
-# get all projects
-api.sync()
-print(api.state['projects'])
+try:
+    tasks = api.get_tasks()
+    print(tasks)
+except Exception as error:
+    print(error)

@@ -1,8 +1,9 @@
-certifi==2020.6.20
-chardet==3.0.4
-idna==2.10
-pkg-resources==0.0.0
-requests==2.24.0
-todoist-python==8.1.2
-typing==3.7.4.3
-urllib3==1.25.10
+certifi==2024.2.2
+charset-normalizer==3.3.2
+DateTime==5.5
+idna==3.7
+pytz==2024.1
+requests==2.31.0
+setuptools==69.5.1
+urllib3==2.2.1
+zope.interface==6.3
