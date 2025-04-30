@@ -1,129 +1,110 @@
-import subprocess
-import json
+#!/usr/bin/env python3
+"""
+Todoist CLI - A command-line interface for interacting with Todoist tasks.
+"""
+
 import sys
-from todoist_api_python.api import TodoistAPI
+import argparse
+import logging
+from typing import Optional, List
 
-# Get the API token from 1Password using the CLI
-def get_api_token():
-    try:
-        # Run the 1Password CLI command to get the token
-        result = subprocess.run(
-            ["op", "read", "op://Private/Todoist/token"], 
-            capture_output=True, 
-            text=True, 
-            check=True
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        print(f"Error retrieving API token from 1Password: {e}")
-        print(f"Make sure 1Password CLI is installed and you're signed in.")
-        return None
+from todoist_cli.auth import AuthManager
+from todoist_cli.api import TodoistManager
+from todoist_cli.commands import CommandRegistry
+from todoist_cli.utils import setup_logging, load_config
 
-# Get the API token
-api_token = get_api_token()
 
-if not api_token:
-    print("Could not retrieve API token. Exiting.")
-    exit(1)
-
-# Initialize the Todoist API with the token
-api = TodoistAPI(api_token)
-
-def get_tasks():
-    """Retrieve and display all tasks from Todoist"""
-    try:
-        # Get all tasks
-        tasks = api.get_tasks()
-        
-        # Print tasks in a more readable format
-        if tasks:
-            print(f"Retrieved {len(tasks)} tasks:")
-            for i, task in enumerate(tasks, 1):
-                print(f"{i}. {task.content} (Due: {task.due.date if task.due else 'No due date'})")
-        else:
-            print("No tasks found.")
-        
-        return tasks
-    except Exception as error:
-        print(f"Error accessing Todoist API: {error}")
-        return None
-
-def create_task(content, subtasks=None, **kwargs):
+def parse_global_args() -> argparse.Namespace:
     """
-    Create a new task in Todoist with optional subtasks.
-    
-    Args:
-        content (str): The task content/name
-        subtasks (list): Optional list of subtask names
-        **kwargs: Additional task attributes (due_date, priority, etc.)
+    Parse global command line arguments
     
     Returns:
-        dict: The created task data
+        Parsed arguments
     """
-    try:
-        # Create main task
-        task = api.add_task(content=content, **kwargs)
-        print(f"Created task: {task.content}")
-        
-        # Create subtasks if provided
-        if subtasks and task:
-            for subtask_content in subtasks:
-                subtask = api.add_task(
-                    content=subtask_content,
-                    parent_id=task.id
-                )
-                print(f"  - Added subtask: {subtask.content}")
-        
-        return task
-    except Exception as error:
-        print(f"Error creating task: {error}")
-        return None
+    parser = argparse.ArgumentParser(
+        description="Todoist CLI - A command-line interface for Todoist",
+        add_help=False  # We'll handle help manually to show command-specific help
+    )
+    
+    # Global options
+    parser.add_argument("--config", help="Path to config file")
+    parser.add_argument("--token-path", help="Path to Todoist API token in 1Password")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+    parser.add_argument("--help", "-h", action="store_true", help="Show help message and exit")
+    
+    # Parse just the known args, as command-specific args will be parsed later
+    args, _ = parser.parse_known_args()
+    
+    return args
 
-# Main execution
-if __name__ == "__main__":
-    # Check for command line arguments
-    if len(sys.argv) > 1:
-        command = sys.argv[1]
+
+def main() -> int:
+    """
+    Main entry point
+    
+    Returns:
+        Exit code
+    """
+    # Parse global arguments
+    args = parse_global_args()
+    
+    # Setup logging
+    setup_logging(verbose=args.verbose)
+    logger = logging.getLogger(__name__)
+    
+    # Load configuration
+    config = load_config(config_path=args.config)
+    
+    # Override config with command line arguments
+    if args.token_path:
+        config["token_path"] = args.token_path
+    if args.verbose:
+        config["verbose"] = True
         
-        # Create the Task Reset task with subtasks
-        if command == "create_reset_task":
-            reset_task = create_task(
-                "⚡ Task Reset",
-                subtasks=[
-                    "Capture all tasks",
-                    "Prioritise captured tasks",
-                    "Take action on highest priority tasks"
-                ]
-            )
-            if reset_task:
-                print("Task Reset created successfully!")
-        
-        # Generic task creation command
-        elif command == "create":
-            if len(sys.argv) < 3:
-                print("Error: Task content required")
-                print("Usage: python main.py create \"Task name\" [\"Subtask 1\" \"Subtask 2\" ...]")
-                sys.exit(1)
-            
-            # Get task content and optional subtasks
-            task_content = sys.argv[2]
-            subtasks = sys.argv[3:] if len(sys.argv) > 3 else None
-            
-            # Create the task
-            task = create_task(task_content, subtasks)
-            if task:
-                print(f"Task '{task_content}' created successfully!")
-        
-        # Show usage information
-        elif command == "help":
-            print("\nTodoist CLI - Available commands:")
-            print("  python main.py                     - List all tasks")
-            print("  python main.py create_reset_task   - Create Task Reset with predefined subtasks")
-            print("  python main.py create \"Task name\" [\"Subtask 1\" \"Subtask 2\" ...] - Create custom task with optional subtasks")
-            print("  python main.py help                - Show this help message\n")
+    # Initialize authentication
+    auth_manager = AuthManager(token_path=config.get("token_path"))
+    api_token = auth_manager.get_api_token()
+    
+    if not api_token:
+        print("Could not retrieve API token. Exiting.")
+        print("Make sure 1Password CLI is installed and you're signed in,")
+        print("or set the TODOIST_API_TOKEN environment variable.")
+        return 1
+    
+    # Initialize API client
+    todoist_manager = TodoistManager(api_token)
+    
+    # Initialize command registry
+    command_registry = CommandRegistry(todoist_manager)
+    
+    # Get the command and its arguments
+    command_args = sys.argv[1:]
+    
+    # If no arguments or --help, show help
+    if not command_args or args.help:
+        if len(command_args) > 0 and command_args[0] in command_registry.commands and not args.help:
+            # If a valid command is provided without --help, execute it
+            command = command_args[0]
+            command_registry.execute_command(command, command_args[1:])
         else:
-            print(f"Unknown command: {command}")
-            print("Use 'python main.py help' to see available commands")
-    else:
-        # Default behavior: get tasks
-        get_tasks()
+            # Show help
+            command_registry._show_help()
+        return 0
+    
+    # Execute the command
+    command = command_args[0]
+    command_registry.execute_command(command, command_args[1:])
+    
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}")
+        logging.exception("Unhandled exception")
+        sys.exit(1)
